@@ -3,40 +3,77 @@ pragma solidity ^0.8.23;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {DirectFundingConsumer} from "./DirectFundingConsumer.sol";
+import {LinkTokenInterface} from "@chainlink/contracts@1.2.0/src/v0.8/shared/interfaces/LinkTokenInterface.sol";
 
-contract Coinflip is Ownable{
-    // A map of the player and their corresponding requestId
+contract Coinflip is Ownable {
+    // A mapping of the player to their corresponding requestId.
     mapping(address => uint256) public playerRequestID;
-    // A map that stores the player's 3 Coinflip guesses
+    // A mapping that stores the player's 3 coinflip guesses.
     mapping(address => uint8[3]) public bets;
-    // An instance of the random number requestor, client interface
+    // An instance of the random number requestor.
     DirectFundingConsumer private vrfRequestor;
 
-    ///@dev we no longer use the seed, instead each coinflip deployment should spawn its own VRF instance so that the Coinflip smart contract is the owner of the DirectFunding contract.
-    ///@notice This programming pattern is known as a factory model - a contract creating other contracts 
-    constructor() Ownable(msg.sender) {}
-
-    ///@notice Fund the VRF instance with **5** LINK tokens.
-    ///@return boolean of whether funding the VRF instance with link tokens was successful or not
-    ///@dev use the address of LINK token contract provided. Do not change the address!
-    ///@custom: Attention! In order for this contract to fund another contract, which tokens does this contract need to have before calling this function? What **additional** functions does this contract need to "receive" these tokens itself?
-    function fundOracle() external returns(bool){
-        address Link_addr = 0x779877A7B0D9E8603169DdbD7836e478b4624789;
+    /// @dev Each Coinflip deployment spawns its own VRF instance.
+    constructor() Ownable(msg.sender) {
+        vrfRequestor = new DirectFundingConsumer();
+        // IMPORTANT: Make sure the DirectFundingConsumer contract’s variable `numWords` is updated to 3.
     }
 
-    ///@notice user guess THREE flips either a 1 or a 0.
-    ///@param uint8 3 guesses - which is "required" to be 1 or 0
-    ///@dev After validating the user input, store the user input and request ID in their respective global mappings and call the "requestRandomWords" function in VRF instance
-    ///@custom: Attention! How do we make sure 3 random numbers are requested?
-    ///@dev Then, store the requestid in global mapping
-    function userInput(uint8[3] Guesses) external {}
+    /// @notice Funds the VRF instance with 5 LINK tokens.
+    /// @return Whether the funding was successful.
+    function fundOracle() external returns(bool) {
+        // LINK token address (do not change)
+        address Link_addr = 0x779877A7B0D9E8603169DdbD7836e478b4624789;
+        LinkTokenInterface linkToken = LinkTokenInterface(Link_addr);
+        // Amount: 5 LINK tokens (assuming 18 decimals)
+        uint256 amount = 5 * 10**18;
+        // Transfer 5 LINK tokens from this contract to the VRF instance.
+        bool success = linkToken.transfer(address(vrfRequestor), amount);
+        return success;
+    }
 
-    ///@notice Due to the fact that a blockchain does not deliver data instantaneously, in fact quite slowly under congestion, allow users to check the status of their request.
-    ///@return boolean of whether the request has been fulfilled or not
-    function checkStatus() external view returns(bool){}
+    /// @notice Accepts 3 coinflip guesses (each guess must be 0 or 1) from the user.
+    /// @dev Validates input, stores the guesses, and calls the VRF instance to request 3 random words.
+    function userInput(uint8[3] memory Guesses) external {
+        // Ensure each guess is either 0 or 1.
+        require(Guesses[0] <= 1 && Guesses[1] <= 1 && Guesses[2] <= 1, "Guesses must be 0 or 1");
+        // Store the player's guesses.
+        bets[msg.sender] = Guesses;
+        // Request 3 random words from the VRF instance.
+        uint256 requestId = vrfRequestor.requestRandomWords(false);
+        // Store the requestId corresponding to the player.
+        playerRequestID[msg.sender] = requestId;
+    }
 
-    ///@return boolean of whether the user won or not based on their input
-    ///@dev Check if whether each of the three random numbers is even or odd. If it is even, the randomly generated flip is 0 and if it is odd, the random flip is 1.
-    ///@notice Player wins if the 1, 0 flips of the contract matches the 3 guesses of the player.
-    function determineFlip() external view returns(bool){}
+    /// @notice Returns whether the random number request has been fulfilled.
+    function checkStatus() external view returns(bool) {
+        uint256 requestId = playerRequestID[msg.sender];
+        (, bool fulfilled, ) = vrfRequestor.getRequestStatus(requestId);
+        return fulfilled;
+    }
+
+    /// @notice Determines if the user won by comparing their guesses to the coinflip outcomes.
+    /// @dev Converts each random number into a coinflip result (even -> 0, odd -> 1) and checks against the stored bets.
+    /// @return True if the user wins (all outcomes match), false otherwise.
+    function determineFlip() external view returns(bool) {
+        uint256 requestId = playerRequestID[msg.sender];
+        (, bool fulfilled, uint256[] memory randomWords) = vrfRequestor.getRequestStatus(requestId);
+        require(fulfilled, "Random numbers not yet fulfilled");
+        require(randomWords.length == 3, "Expected 3 random numbers");
+        
+        uint8[3] memory outcomes;
+        for(uint8 i = 0; i < 3; i++){
+            outcomes[i] = (randomWords[i] % 2 == 0) ? 0 : 1;
+        }
+        
+        uint8[3] memory playerBets = bets[msg.sender];
+        bool win = true;
+        for(uint8 i = 0; i < 3; i++){
+            if(outcomes[i] != playerBets[i]){
+                win = false;
+                break;
+            }
+        }
+        return win;
+    }
 }
